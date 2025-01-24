@@ -6,6 +6,7 @@ import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
@@ -758,7 +759,7 @@ public class Connection {
 							break;
 						case AWAITING_MSG_PAYLOAD :
 							receiveBuffer.get(buf, 0, payload_length + 2);
-							on_msg(new String(buf, 0, payload_length));
+							on_msg(new String(buf, 0, payload_length, StandardCharsets.ISO_8859_1));
 							pos = 0;
 							status = AWAITING_CONTROL;
 							subject = null;
