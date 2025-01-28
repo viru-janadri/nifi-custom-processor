@@ -3,6 +3,7 @@ package com.janadri.processors.nats;
 import io.nats.client.*;
 import io.nats.client.Connection;
 import io.nats.client.Message;
+import io.nats.client.api.ConsumerInfo;
 import io.nats.client.impl.Headers;
 
 
@@ -118,56 +119,73 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
     @OnScheduled
     public void onScheduled(final ProcessContext context) throws ProcessException {
         try {
-            Options options = Options.builder()
+            // Step 1: Set Up Connection Options
+            Options.Builder optionsBuilder = Options.builder()
                     .server(context.getProperty(SEED_BROKERS).getValue())
-                    .connectionTimeout(Duration.ofSeconds(5)).build();
+                    .connectionTimeout(Duration.ofSeconds(5));
 
             String username = context.getProperty(NATS_USERNAME).getValue();
             String password = context.getProperty(NATS_PASSWORD).getValue();
 
             if (username != null && password != null) {
-                options = Options.builder()
-                        .server(context.getProperty(SEED_BROKERS).getValue())
-                        .userInfo(username.toCharArray(), password.toCharArray())
-                        .build();
+                optionsBuilder.userInfo(username.toCharArray(), password.toCharArray());
             }
-            natsConnection = Nats.connect(options);
+
+            natsConnection = Nats.connect(optionsBuilder.build());
             jetStream = natsConnection.jetStream();
+            JetStreamManagement jsm = natsConnection.jetStreamManagement();
 
+            // Step 2: Extract Topic & Define Consumer Name
             String topic = context.getProperty(TOPIC).getValue();
-            String durableName = "nifi-" + getIdentifier();
+            String streamName = topic.split("\\.")[0];
+            String durableName = "nifi_" + getIdentifier() + "_" + streamName;
 
+            try {
+                // Step 3: Retrieve Existing Consumer Info
+                ConsumerContext consumerContext = jetStream.getConsumerContext(streamName, durableName);
+                ConsumerInfo consumerInfo = consumerContext.getCachedConsumerInfo();
 
-            // Set up a Dispatcher to handle messages
+                if (consumerInfo != null) {
+                    String existingTopic = consumerInfo.getConsumerConfiguration().getFilterSubject();
+
+                    if (!existingTopic.equals(topic)) {
+                        // Consumer topic has changed, so delete and recreate
+                        getLogger().debug("Topic changed from '{}' to '{}'. Deleting old consumer: {}", existingTopic, topic, durableName);
+                        jsm.deleteConsumer(streamName, durableName);
+                    } else {
+                        // Reuse the existing consumer if topic remains the same
+                        getLogger().debug("Reusing existing consumer for topic: {}", topic);
+                    }
+                }
+            } catch (JetStreamApiException | IOException e) {
+                // Step 4: Consumer does not exist, proceed with a new subscription
+                getLogger().debug("Consumer does not exist or cannot be retrieved. Proceeding with a new subscription.");
+            }
+
+            // Step 5: Set Up Dispatcher and Message Handler
             this.dispatcher = natsConnection.createDispatcher();
 
-            // Message handler logic
-            MessageHandler handler = new MessageHandler() {
-                @Override
-                public void onMessage(Message msg) {
-                    if (!isShutdown) {
-                        try {
-                            // Log headers for debugging
-                            if (msg.hasHeaders()) {
-                                getLogger().debug("Received message with headers: {}", msg.getHeaders());
-                            }
-                            messageQueue.offer(msg);
-                        } catch (Exception e) {
-                            getLogger().error("Error handling message", e);
+            MessageHandler handler = msg -> {
+                if (!isShutdown) {
+                    try {
+                        if (msg.hasHeaders()) {
+                            getLogger().debug("Received message with headers: {}", msg.getHeaders());
                         }
+                        messageQueue.offer(msg);
+                    } catch (Exception e) {
+                        getLogger().error("Error handling message", e);
                     }
                 }
             };
 
-
+            // Step 6: Subscribe to the Topic with Durable Consumer
             PushSubscribeOptions pushOpts = PushSubscribeOptions.builder()
                     .durable(durableName)
                     .build();
 
-            // Subscribe using Dispatcher and MessageHandler
             subscription = jetStream.subscribe(topic, dispatcher, handler, true, pushOpts);
 
-            getLogger().info("Successfully subscribed to JetStream topic: {}", topic);
+            getLogger().debug("Successfully subscribed to JetStream topic: {}", topic);
 
         } catch (Exception e) {
             getLogger().error("Failed to initialize NATS JetStream connection", e);
