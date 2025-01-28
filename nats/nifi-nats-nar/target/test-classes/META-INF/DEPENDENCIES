@@ -6,6 +6,15 @@
 nifi-nats-nar
 
 
+From: 'an unknown organization'
+
+  - jnats (https://github.com/nats-io/nats.java) io.nats:jnats:jar:2.16.14
+    License: The Apache License, Version 2.0  (http://www.apache.org/licenses/LICENSE-2.0.txt)
+
+  - EdDSA-Java (https://github.com/str4d/ed25519-java) net.i2p.crypto:eddsa:bundle:0.3.0
+    License: CC0 1.0 Universal  (https://creativecommons.org/publicdomain/zero/1.0/)
+
+
 From: 'Apache NiFi Project' (https://nifi.apache.org/)
 
   - nifi-nats-processors (https://nifi.apache.org/nifi-nar-bundles/nats/nifi-nats-processors) com.janadri:nifi-nats-processors:jar:1.0.0

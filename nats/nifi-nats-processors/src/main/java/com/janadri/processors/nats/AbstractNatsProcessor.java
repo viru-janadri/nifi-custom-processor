@@ -19,17 +19,16 @@ package com.janadri.processors.nats;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.util.StandardValidators;
-import org.nats.Connection;
 
-import java.io.IOException;
+
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Properties;
 import java.util.regex.Pattern;
 
 /**
@@ -38,7 +37,7 @@ import java.util.regex.Pattern;
  */
 public abstract class AbstractNatsProcessor extends AbstractProcessor {
 
-    private static final String SINGLE_BROKER_REGEX = ".*?\\:\\d{3,5}";
+    private static final String SINGLE_BROKER_REGEX = ".*?:\\d{3,5}";
     private static final String BROKER_REGEX = SINGLE_BROKER_REGEX + "(?:,\\s*" + SINGLE_BROKER_REGEX + ")*";
     
     public static final PropertyDescriptor SEED_BROKERS = new PropertyDescriptor.Builder()
@@ -46,7 +45,7 @@ public abstract class AbstractNatsProcessor extends AbstractProcessor {
         .description("A comma-separated list of known NATS Brokers in the format nats://<host>:<port>")
         .required(true)
         .addValidator(StandardValidators.createRegexMatchingValidator(Pattern.compile(BROKER_REGEX)))
-        .expressionLanguageSupported(false)
+        .expressionLanguageSupported(ExpressionLanguageScope.NONE)
         .build();
     public static final PropertyDescriptor CHARSET = new PropertyDescriptor.Builder()
         .name("Character Set")
@@ -79,42 +78,12 @@ public abstract class AbstractNatsProcessor extends AbstractProcessor {
     
     @Override
     public Collection<ValidationResult> customValidate(final ValidationContext context) {
-        final List<ValidationResult> errors = new ArrayList<>(super.customValidate(context));
 
-        return errors;
+        return new ArrayList<>(super.customValidate(context));
     }
     
-    protected Properties createConfig(final ProcessContext context) {
-        
-        final String brokers = context.getProperty(SEED_BROKERS).getValue();
-        
-        final Properties properties = new Properties();
-        properties.setProperty("uri", brokers);
-        
-// TODO: future
-//        properties.setProperty("request.timeout.ms", String.valueOf(context.getProperty(TIMEOUT).asTimePeriod(TimeUnit.MILLISECONDS).longValue()));
-//        properties.setProperty("message.send.max.retries", "1");
-//        properties.setProperty("request.required.acks", context.getProperty(DELIVERY_GUARANTEE).getValue());
-//        properties.setProperty("producer.type", context.getProperty(PRODUCER_TYPE).getValue());
 
-        return properties;
-    }
 
-    protected Connection createConnection(final ProcessContext context) {
-        try {
-            return Connection.connect(createConfig(context), null);
-        } catch (IOException | InterruptedException ex) {
-            throw new RuntimeException(ex);
-        }
-    }
-    
-    protected void closeWithLogging(Connection connection) {
-        try {
-            connection.close(true);
-        } catch (IOException ex) {
-            // TODO: more elaborate handling needed?
-            getLogger().warn("Failed to close NATS connection.", ex);
-        }
-    }
+
 
 }
