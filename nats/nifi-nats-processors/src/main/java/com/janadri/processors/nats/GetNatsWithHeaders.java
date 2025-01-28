@@ -4,7 +4,7 @@ import io.nats.client.*;
 import io.nats.client.Connection;
 import io.nats.client.Message;
 import io.nats.client.impl.Headers;
-import io.nats.client.impl.NatsMessage;
+
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -17,7 +17,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
@@ -35,6 +34,9 @@ import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.OutputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
 import io.nats.client.Dispatcher;
+import io.nats.client.JetStream;
+import io.nats.client.JetStreamSubscription;
+import io.nats.client.PushSubscribeOptions;
 
 @SupportsBatching
 @Tags({"NATS", "Messaging", "Get", "Ingest", "Ingress", "Topic", "PubSub", "Receive"})
@@ -45,7 +47,7 @@ import io.nats.client.Dispatcher;
 })
 public class GetNatsWithHeaders extends AbstractNatsProcessor {
 
-    public static final String HEADER_ATTRIBUTE = "nats.header";
+    public static final String HEADER_ATTRIBUTE = "nats.header.";
 
 
     public static final PropertyDescriptor TOPIC = new PropertyDescriptor.Builder()
@@ -63,15 +65,33 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
             .addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR)
             .build();
 
+    public static final PropertyDescriptor NATS_USERNAME = new PropertyDescriptor.Builder()
+            .name("NATS Username")
+            .description("Username for NATS authentication")
+            .required(false)
+            .sensitive(false)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
+
+    public static final PropertyDescriptor NATS_PASSWORD = new PropertyDescriptor.Builder()
+            .name("NATS Password")
+            .description("Password for NATS authentication")
+            .required(false)
+            .sensitive(true)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
+
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
             .name("success")
             .description("FlowFiles containing received NATS messages are routed here")
             .build();
 
     private Connection natsConnection;
-    private Dispatcher dispatcher;  // Remove the Subscription field since we're using Dispatcher
+    private Dispatcher dispatcher;
     private final BlockingQueue<Message> messageQueue;
     private volatile boolean isShutdown = false;
+    private JetStream jetStream;
+    private JetStreamSubscription subscription;
 
     public GetNatsWithHeaders() {
         messageQueue = new LinkedBlockingQueue<>();
@@ -81,6 +101,8 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         final List<PropertyDescriptor> properties = new ArrayList<>();
         properties.add(SEED_BROKERS);
+        properties.add(NATS_USERNAME);
+        properties.add(NATS_PASSWORD);
         properties.add(TOPIC);
         properties.add(BATCH_SIZE);
         return properties;
@@ -96,102 +118,134 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
     @OnScheduled
     public void onScheduled(final ProcessContext context) throws ProcessException {
         try {
-            Options.Builder optionsBuilder = new Options.Builder()
-                    .server(context.getProperty(SEED_BROKERS).getValue());
+            Options options = Options.builder()
+                    .server(context.getProperty(SEED_BROKERS).getValue())
+                    .connectionTimeout(Duration.ofSeconds(5)).build();
 
-            optionsBuilder.connectionListener(new ConnectionListener() {
-                @Override
-                public void connectionEvent(Connection conn, Events type) {
-                    getLogger().info("NATS connection status changed: {}", type);
-                }
-            });
+            String username = context.getProperty(NATS_USERNAME).getValue();
+            String password = context.getProperty(NATS_PASSWORD).getValue();
 
-            natsConnection = Nats.connect(optionsBuilder.build());
+            if (username != null && password != null) {
+                options = Options.builder()
+                        .server(context.getProperty(SEED_BROKERS).getValue())
+                        .userInfo(username.toCharArray(), password.toCharArray())
+                        .build();
+            }
+            natsConnection = Nats.connect(options);
+            jetStream = natsConnection.jetStream();
 
+            String topic = context.getProperty(TOPIC).getValue();
+            String durableName = "nifi-" + getIdentifier();
+
+
+            // Set up a Dispatcher to handle messages
+            this.dispatcher = natsConnection.createDispatcher();
+
+            // Message handler logic
             MessageHandler handler = new MessageHandler() {
                 @Override
                 public void onMessage(Message msg) {
                     if (!isShutdown) {
                         try {
-                            boolean offered = messageQueue.offer(msg, 1, TimeUnit.SECONDS);
-                            if (!offered) {
-                                getLogger().warn("Failed to add message to queue - queue might be full");
+                            // Log headers for debugging
+                            if (msg.hasHeaders()) {
+                                getLogger().debug("Received message with headers: {}", msg.getHeaders());
                             }
+                            messageQueue.offer(msg);
                         } catch (Exception e) {
-                            getLogger().error("Error processing NATS message", e);
+                            getLogger().error("Error handling message", e);
                         }
                     }
                 }
             };
 
-            String topic = context.getProperty(TOPIC).getValue();
-            String queueGroup = "nifi-" + getIdentifier();
-            this.dispatcher = natsConnection.createDispatcher(handler);
-            this.dispatcher.subscribe(topic, queueGroup);
 
-            getLogger().info("Successfully subscribed to NATS topic: {} with queue group: {}",
-                    topic, queueGroup);
+            PushSubscribeOptions pushOpts = PushSubscribeOptions.builder()
+                    .durable(durableName)
+                    .build();
+
+            // Subscribe using Dispatcher and MessageHandler
+            subscription = jetStream.subscribe(topic, dispatcher, handler, true, pushOpts);
+
+            getLogger().info("Successfully subscribed to JetStream topic: {}", topic);
 
         } catch (Exception e) {
-            getLogger().error("Failed to initialize NATS connection", e);
-            throw new ProcessException("Failed to connect to NATS", e);
+            getLogger().error("Failed to initialize NATS JetStream connection", e);
+            throw new ProcessException(e);
         }
     }
+
+
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session)
             throws ProcessException {
 
         final int batchSize = context.getProperty(BATCH_SIZE).asInteger();
-        List<Message> messages = new ArrayList<>();
 
-        // Collect messages up to batch size
-        for (int i = 0; i < batchSize && !isShutdown; i++) {
-            Message msg = messageQueue.poll();
-            if (msg != null) {
+        if (batchSize == 1) {
+            // Single message processing
+            final Message message = messageQueue.poll();
+            if (message == null) {
+                return;
+            }
+
+            processMessage(message, session);
+        } else {
+            // Batch processing path
+            List<Message> messages = new ArrayList<>(batchSize);
+            for (int i = 0; i < batchSize; i++) {
+                Message msg = messageQueue.poll();
+                if (msg == null) break;
                 messages.add(msg);
-            } else {
-                break;
+            }
+
+            if (messages.isEmpty()) {
+                return;
+            }
+
+            for (final Message message : messages) {
+                processMessage(message, session);
             }
         }
+    }
 
-        if (messages.isEmpty()) {
-            return;
-        }
-
-        for (final Message message : messages) {
-            FlowFile flowFile = session.create();
-            try {
-                // Write the message data
-                flowFile = session.write(flowFile, new OutputStreamCallback() {
-                    @Override
-                    public void process(OutputStream out) throws IOException {
-                        byte[] data = message.getData();
+    private void processMessage(final Message message, final ProcessSession session) {
+        FlowFile flowFile = session.create();
+        try {
+            flowFile = session.write(flowFile, new OutputStreamCallback() {
+                @Override
+                public void process(OutputStream out) throws IOException {
+                    byte[] data = message.getData();
+                    if (data != null) {
                         out.write(data);
                     }
-                });
+                }
+            });
 
-                // Add attributes
-                Map<String, String> attributes = new HashMap<>();
-                attributes.put("nats.topic", message.getSubject());
+            Map<String, String> attributes = new HashMap<>();
+            attributes.put("nats.topic", message.getSubject());
 
-                // Process headers if present
-                if (message.hasHeaders()) {
-                    Headers headers = message.getHeaders();
-                    attributes.put(HEADER_ATTRIBUTE, headers.toString());
+            // Enhanced header handling
+            if (message.hasHeaders()) {
+                Headers headers = message.getHeaders();
+
+                for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                    attributes.put(HEADER_ATTRIBUTE + entry.getKey(),
+                            String.join(",", entry.getValue()));
                 }
 
-                flowFile = session.putAllAttributes(flowFile, attributes);
-
-                session.transfer(flowFile, REL_SUCCESS);
-                session.getProvenanceReporter().receive(flowFile,
-                        "nats://" + message.getSubject(),
-                        "Received message from NATS");
-
-            } catch (Exception e) {
-                session.remove(flowFile);
-                getLogger().error("Failed to process NATS message", e);
             }
+
+            flowFile = session.putAllAttributes(flowFile, attributes);
+            session.transfer(flowFile, REL_SUCCESS);
+
+            // Ensure proper acknowledgment
+            message.ack();
+
+        } catch (Exception e) {
+            session.remove(flowFile);
+            getLogger().error("Failed to process message: {}", e.getMessage(), e);
         }
     }
 
@@ -200,7 +254,7 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
         isShutdown = true;
         try {
             if (dispatcher != null) {
-                dispatcher.drain(Duration.ofSeconds(5));  // Drain any pending messages
+                dispatcher.drain(Duration.ofSeconds(5));
             }
             if (natsConnection != null) {
                 natsConnection.flush(Duration.ofSeconds(5));
@@ -211,6 +265,7 @@ public class GetNatsWithHeaders extends AbstractNatsProcessor {
         } finally {
             messageQueue.clear();
             dispatcher = null;
+            subscription = null;
             natsConnection = null;
             isShutdown = false;
         }

@@ -1,0 +1,89 @@
+### IntelliJ IDEA ###
+.idea/
+*.iml
+*.iws
+out/
+logs/
+*.log
+
+### Maven ###
+target/
+!target/*.jar
+!target/*.war
+!target/*.ear
+!target/generated-sources/
+!target/maven-status/
+dependency-reduced-pom.xml
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+mvnw
+mvnw.cmd
+
+### NiFi Custom Processor ###
+nifi-extension-metadata/
+nifi-processor-bundle/
+nifi-nar-bundle/
+nifi-docs/
+
+### OS-Specific ###
+.DS_Store
+Thumbs.db
+
+### Logs and Temporary Files ###
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+*.class
+*.jar
+*.war
+*.ear
+
+### User-Specific Files ###
+*.pyc
+*.pyo
+*.class
+*.cache
+*.project
+*.classpath
+*.settings/
+
+### JetBrains ###
+.idea/
+*.iml
+*.iws
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/dictionaries
+.idea/vcs.xml
+.idea/libraries/
+.idea/misc.xml
+.idea/modules.xml
+.idea/artifacts/
+.idea/httpRequests/
+.idea/shelf/
+.idea/scopes/
+*.ipr
+*.iws
+
+### JetBrains OS-Specific ###
+.idea/*.xml
+.idea/*.iml
+
+### Build System ###
+!**/src/main/
+!**/src/test/
+build/
+dist/
+node_modules/
+npm-debug.log
+
+### Generated Files ###
+target/
+generated/
+bin/
+gen/
